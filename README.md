@@ -3,9 +3,9 @@ Mon KM
 
 ## CENTOS
 
-### restart
+### Restart
 
-shutdown -r now
+sudo shutdown -r now
 
 ## SELINUX
 
@@ -18,7 +18,9 @@ setsebool -P nis_enabled 1 # activation d'un boolean selinux pour autoriser l'us
 
 ## KAFKA
 
-### Builder kafkacat sous Centos 7.7
+### kafkacat
+
+#### Builder kafkacat sous Centos 7.7
 
 ```bash
 # la base pour compiler de C++
@@ -41,14 +43,22 @@ sudo ./bootstrap.sh # si la compilation a planté car trop de parallelisation
 
 ```
 
-### installer kafkacat sur toute la centos
+#### installer kafkacat sur toute la centos
 
 ```bash
 sudo mv ./kafkacat /usr/local/bin
 sudo chmod 755 /usr/local/bin/kafkacat
 ```
 
-### Kafka lui même
+#### tester kafkacat
+
+```bash
+echo "coucou $(date)" | kafkacat -P -b localhost:9092 -t rsyslog
+kafkacat -C -b localhost:9092 -t rsyslog
+
+```
+
+### Kafka
 
 ```bash
 systemctl start zookeeper
@@ -60,7 +70,7 @@ kafkacat -C -b localhost:9092 -t rsyslog
 ```
 
 
-### /etc/systemd/system/zookeeper.service
+#### /etc/systemd/system/zookeeper.service
 ```
 [Unit]
 Requires=network.target remote-fs.target
@@ -79,7 +89,7 @@ WantedBy=multi-user.target
 ```
 
 
-### /etc/systemd/system/kafka.service
+#### /etc/systemd/system/kafka.service
 ```
 [Unit]
 Requires=zookeeper.service
@@ -97,14 +107,13 @@ WantedBy=multi-user.target
 ```
 
 
-### Rsyslog pour envoyer vers Kafka (Centos 7)
+## LOGGER -(UDP)-> RSYSLOG -(KAFKA)-> KAFKA (Centos7)
 
-Objectif : fichiers /tmp/local*.log ligne/ligne -> kafka sans logstash (perf +++)
+Objectif : faire du syslog -> kafka sans logstash pour les perfs
 
 ```
 sudo setsebool -P nis_enabled 1
 ```
-
 
 ### omkafka: kafka message ... Permission denied
 
@@ -155,23 +164,15 @@ sudo systemctl daemon-reload
 #### rsyslog_to_kafka.conf
 
 ```
-#### MODULES ####
+# CONF
 module(load="omkafka")   # lets you send to Kafka
 
-# Provides UDP syslog reception
 $ModLoad imfile
 $ModLoad imudp
 $UDPServerRun 514
 
-#### GLOBAL DIRECTIVES ####
-
-# Where to place auxiliary files
 $WorkDirectory /var/lib/rsyslog
 
-# Use default timestamp format
-$ActionFileDefaultTemplate json_lines
-
-#### RULES ####
 # remote host is: name/ip:port, e.g. 192.168.0.1:514, port optional
 #*.* @@remote-host:514
 
@@ -180,28 +181,12 @@ input(type="imfile"
   Tag="locallogs"
 )
 
-template(name="json_lines" type="list" option.json="on") {
-  constant(value="{")
-  constant(value="\"timestamp\":\"")
-  property(name="timereported" dateFormat="rfc3339")
-  constant(value="\",\"message\":\"")
-  property(name="msg")
-  constant(value="\",\"host\":\"")
-  property(name="hostname")
-  constant(value="\",\"severity\":\"")
-  property(name="syslogseverity-text")
-  constant(value="\",\"facility\":\"")
-  property(name="syslogfacility-text")
-  constant(value="\",\"syslog-tag\":\"")
-  property(name="syslogtag")
-  constant(value="\"}")
-}
-
+template(name="raw" type="string" string="%msg")
 
 main_queue(
-  queue.workerthreads="3"      # threads to work on the queue
-  queue.dequeueBatchSize="1000" # max number of messages to process at once
-  queue.size="10000"           # max queue size
+  queue.workerthreads="2"      # threads to work on the queue
+  queue.dequeueBatchSize="100" # max number of messages to process at once
+  queue.size="1000"           # max queue size
 )
 
 
@@ -209,12 +194,24 @@ action(
   broker=["dev:9092"]
   type="omkafka"
   topic="rsyslog"
-  template="json_lines"
+  template="raw"
 )
+#EOF
 
 ```
 
 sudo systemctl restart rsyslog_to_kafka
 sudo systemctl status rsyslog_to_kafka
+
+Sur la machine source de test :
+
+```bash
+logger -n xxx.xxx.xxx.xxx -P 514 "Test message"
+```
+
+Sur la machine ou est kafka : 
+```bash
+kafkacat -C -b dev:9092 -t rsyslog
+```
 
 
